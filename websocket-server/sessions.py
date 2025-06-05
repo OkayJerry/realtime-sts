@@ -8,10 +8,11 @@ import websockets
 from fastapi import WebSocket
 from websockets import exceptions as ws_exceptions
 
-from pydantic import BaseModel
+from api import openai
+from api import firestore
 
 from logger import log, LogLevel
-from api import openai
+
 
 
 class WebSocketRole(Enum):
@@ -39,7 +40,7 @@ class Session:
         self._model_listener: Optional[asyncio.Task] = None
 
     async def set_websocket(self, role: WebSocketRole, ws: WebSocket):
-        """
+        '''
         Asynchronously sets or updates a `WebSocket` connection for a specific role.
 
         Parameters
@@ -58,7 +59,7 @@ class Session:
         the existing `WebSocket` before assigning the new one. If closing the old
         `WebSocket` fails, the error is silently ignored, and the new `WebSocket`
         is assigned regardless.
-        """
+        '''
         match role:
             case WebSocketRole.TWILIO:
                 if self.ws_twilio and self.ws_twilio != ws:
@@ -78,7 +79,7 @@ class Session:
                     except Exception: pass
 
     async def remove_websocket(self, role: WebSocketRole):
-        """
+        '''
         Asynchronously removes and closes a `WebSocket` connection for a specific role.
 
         Parameters
@@ -94,7 +95,7 @@ class Session:
         closed with a standard code (1000). Any exceptions during the closure
         are silently ignored. After attempting to close, the `WebSocket`
         reference for that role is set to `None`.
-        """
+        '''
         match role:
             case WebSocketRole.TWILIO:
                 if self.ws_twilio:
@@ -113,7 +114,7 @@ class Session:
                 self.ws_model = None
 
     async def send_to_websocket(self, role: WebSocketRole, data: Any):
-        """
+        '''
         Asynchronously sends data to a `WebSocket` connection for a specific role.
 
         Parameters
@@ -136,7 +137,7 @@ class Session:
         for the MODEL `WebSocket`, updating `is_model_connected` status, and
         logs warnings for other exceptions during sending. Any exceptions for
         TWILIO and FRONTEND roles are silently ignored.
-        """
+        '''
         match role:
             case WebSocketRole.TWILIO:
                 if self.ws_twilio:
@@ -159,7 +160,7 @@ class Session:
                         log(LogLevel.WARNING, f'Error sending to LLM {e}')
 
     async def connect_model(self):
-        pass
+        firestore.create_call_document(self.stream_sid, self.config)
 
     async def close_connections(self, reason: str = 'Session ended'):
         log(LogLevel.INFO, f'Closing connections. Reason: {reason}')
@@ -173,10 +174,10 @@ class OpenAISession(Session):
     async def connect_model(self):
         await super().connect_model()
 
-        openai_ws_url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview" 
+        openai_ws_url = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview' 
         headers = [
-            ("Authorization", f"Bearer {self.ai_api_key}"),
-            ("OpenAI-Beta", "realtime=v1"),
+            ('Authorization', f'Bearer {self.ai_api_key}'),
+            ('OpenAI-Beta', 'realtime=v1'),
         ]
         print(openai_ws_url + '\n' + str(headers))
         try:
@@ -212,19 +213,35 @@ class OpenAISession(Session):
                 try:
                     event = json.loads(msg)
                     match event.get('type'):
+
+                        # https://platform.openai.com/docs/api-reference/realtime-server-events/response/audio/delta
                         case 'response.audio.delta':
+
                             # https://www.twilio.com/docs/voice/media-streams/websocket-messages#send-a-media-message
                             await self.send_to_websocket(WebSocketRole.TWILIO, {
-                                "event": "media",
-                                "streamSid": self.stream_sid,
-                                "media": {"payload": event.get("delta")}
+                                'event': 'media',
+                                'streamSid': self.stream_sid,
+                                'media': {'payload': event.get('delta')}
                             })
                             # https://www.twilio.com/docs/voice/media-streams/websocket-messages#send-a-mark-message
                             await self.send_to_websocket(WebSocketRole.TWILIO, {
-                                "event": "mark",
-                                "streamSid": self.stream_sid,
-                                "name": "response_audio_chunk_sent" 
+                                'event': 'mark',
+                                'streamSid': self.stream_sid,
+                                'name': 'response_audio_chunk_sent' 
                             })
+
+                        # https://platform.openai.com/docs/api-reference/realtime-server-events/response/done
+                        # https://platform.openai.com/docs/api-reference/realtime-server-events/conversation/item/input_audio_transcription/completed
+                        case 'response.done' | 'conversation.item.input_audio_transcription.completed':
+                            event['timestamp'] = datetime.datetime.now(datetime.timezone.utc)
+                            firestore.add_event_to_call_document(self.stream_sid, event)
+
+                        # TODO: Implement text streaming to firestore (not working)
+                        # https://platform.openai.com/docs/api-reference/realtime-server-events/response/text/delta
+                        # https://platform.openai.com/docs/api-reference/realtime-server-events/response/text/done
+                        # case 'response.text.delta' | 'response.text.done':
+                        #     event['timestamp'] = datetime.datetime.now(datetime.timezone.utc)
+                        #     firestore.add_event_to_call_document(self.stream_sid, event)
 
                 except Exception as e:
                     log(LogLevel.WARNING, f'Model listener: Error processing event: {e}')
@@ -289,7 +306,7 @@ async def create(stream_sid: str, ai_api_key: str) -> OpenAISession:
     )
     session = OpenAISession(stream_sid, ai_api_key, config=init_config)
     _active_sessions[stream_sid] = session
-    # log(LogLevel.INFO, f"OpenAISession created and stored for {stream_sid}.")
+    # log(LogLevel.INFO, f'OpenAISession created and stored for {stream_sid}.')
     return session
 
 async def remove(stream_sid: str, reason = 'Session ended.'):
