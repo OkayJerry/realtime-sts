@@ -1,5 +1,7 @@
 # Realtime Speech-to-Speech
 
+![realtime-sts_diagram](https://github.com/user-attachments/assets/8013c4d3-76aa-4b11-a68d-1d139c4ba7e9)
+
 ## Quick Setup
 1. ### Websocket Server
 | Step | Terminal | Purpose | Quick Reference |
