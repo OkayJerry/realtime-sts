@@ -29,3 +29,4 @@
 - [ ] Front end
 - [ ] [Gemini Live](https://ai.google.dev/gemini-api/docs/live)
 - [ ] Users
+- [ ] Tool Calling
